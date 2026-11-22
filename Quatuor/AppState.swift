@@ -10,7 +10,7 @@ final class AppState {
         case idle
         case loading(fileName: String)
         case loaded(LoadedSource)
-        case downloading(progress: Double)
+        case downloading(progress: ModelDownloadProgress)
         case processing(progress: Double)
         case done(SeparationResult)
         case failed(String)
@@ -50,9 +50,11 @@ final class AppState {
     func separate(_ source: LoadedSource) async {
         do {
             if !ModelManager.shared.isModelDownloaded {
-                phase = .downloading(progress: 0)
+                phase = .downloading(progress: ModelDownloadProgress(fileIndex: 1, fileCount: 2))
                 try await ModelManager.shared.ensureModel { progress in
                     Task { @MainActor in
+                        // A queued progress update must not restore the download screen after completion.
+                        guard case .downloading = self.phase else { return }
                         self.phase = .downloading(progress: progress)
                     }
                 }

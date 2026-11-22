@@ -178,3 +178,193 @@ struct SeparationResultTests {
         #expect(!FileManager.default.fileExists(atPath: tempDir.path))
     }
 }
+
+// MARK: - Lossless export and mix rendering
+
+@MainActor
+@Suite("Audio export")
+struct AudioExporterTests {
+    private func readSamples(_ url: URL) throws -> (AVAudioFormat, [[Float]]) {
+        let file = try AVAudioFile(forReading: url)
+        let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
+        try file.read(into: buffer)
+        return (file.fileFormat, (0..<Int(buffer.format.channelCount)).map { channel in
+            Array(UnsafeBufferPointer(start: buffer.floatChannelData![channel], count: Int(buffer.frameLength)))
+        })
+    }
+
+    @Test(arguments: [ExportFormat.wav, .flac])
+    func losslessExportPreservesSamplesAndFormat(_ format: ExportFormat) async throws {
+        let source = try makeSineWAV(seconds: 0.5, amplitude: 0.25)
+        let destination = source.deletingPathExtension().appendingPathExtension(format.rawValue)
+        // WAV needs a distinct output path.
+        let output = destination.deletingLastPathComponent()
+            .appendingPathComponent("export-\(UUID().uuidString).\(format.rawValue)")
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: output)
+        }
+        try await AudioExporter.encode(pcmFileURL: source, to: output, format: format)
+        let (_, expected) = try readSamples(source)
+        let (fileFormat, actual) = try readSamples(output)
+        #expect(fileFormat.streamDescription.pointee.mFormatID ==
+                (format == .flac ? kAudioFormatFLAC : kAudioFormatLinearPCM))
+        if format == .flac {
+            #expect(fileFormat.streamDescription.pointee.mFormatFlags == kAppleLosslessFormatFlag_16BitSourceData)
+        } else {
+            #expect(fileFormat.streamDescription.pointee.mBitsPerChannel == 16)
+        }
+        #expect(fileFormat.sampleRate == 44_100)
+        #expect(actual.count == 2)
+        #expect(actual[0].count == expected[0].count)
+        for channel in 0..<2 {
+            let error = zip(expected[channel], actual[channel]).map { abs($0 - $1) }.max()!
+            #expect(error <= 1 / Float(32768))
+        }
+    }
+
+    @Test func mixHonorsGainsAndSilenceAcrossChunks() throws {
+        let source = try makeSineWAV(seconds: 0.5, amplitude: 0.4)
+        let mix = source.deletingLastPathComponent().appendingPathComponent("mix-\(UUID().uuidString).wav")
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: mix)
+        }
+        try AudioExporter.renderMix(inputs: [
+            .init(url: source, gain: 0.25), .init(url: source, gain: 0.5), .init(url: source, gain: 0)
+        ], to: mix)
+        let (_, original) = try readSamples(source)
+        let (_, rendered) = try readSamples(mix)
+        #expect(rendered[0].count == original[0].count)
+        for channel in 0..<2 {
+            let error = zip(original[channel], rendered[channel]).map { abs($0 * 0.75 - $1) }.max()!
+            #expect(error < 0.000001)
+        }
+        try AudioExporter.renderMix(inputs: [.init(url: source, gain: 0)], to: mix)
+        let (_, silent) = try readSamples(mix)
+        #expect(silent.allSatisfy { $0.allSatisfy { $0 == 0 } })
+    }
+
+    @Test func mixAttenuatesTheWholeSongOnlyWhenItWouldClip() throws {
+        let source = try makeSineWAV(seconds: 0.5, amplitude: 0.8)
+        let mix = source.deletingLastPathComponent().appendingPathComponent("mix-\(UUID().uuidString).wav")
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: mix)
+        }
+        try AudioExporter.renderMix(inputs: [.init(url: source, gain: 1), .init(url: source, gain: 1)], to: mix)
+        let (_, original) = try readSamples(source)
+        let (_, rendered) = try readSamples(mix)
+        let originalPeak = original[0].map { abs($0) }.max()!
+        let peak = rendered[0].map { abs($0) }.max()!
+        #expect(abs(peak - 1) < 0.000001)
+        let error = zip(original[0], rendered[0]).map { abs($0 / originalPeak - $1) }.max()!
+        #expect(error < 0.000001)
+    }
+
+    @Test func mixerGainRespectsMuteAndSolo() {
+        #expect(StemPlayer.effectiveVolume(track: .init(volume: 0.3), hasSolo: false) == 0.3)
+        #expect(StemPlayer.effectiveVolume(track: .init(isMuted: true, isSoloed: true), hasSolo: true) == 0)
+        #expect(StemPlayer.effectiveVolume(track: .init(volume: 0.3), hasSolo: true) == 0)
+        #expect(StemPlayer.effectiveVolume(track: .init(isSoloed: true, volume: 0.7), hasSolo: true) == 0.7)
+    }
+}
+
+@Suite("Model download progress")
+struct ModelDownloadProgressTests {
+    @Test func unknownContentLengthStillReportsReceivedBytes() {
+        let updates = ProgressUpdates()
+        let delegate = DownloadDelegate(fileIndex: 1, fileCount: 2) { updates.append($0) }
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let task = session.downloadTask(with: URL(string: "https://example.invalid/model")!)
+        delegate.urlSession(session, downloadTask: task, didWriteData: 4096,
+                            totalBytesWritten: 8192, totalBytesExpectedToWrite: NSURLSessionTransferSizeUnknown)
+        let progress = updates.values.first
+        #expect(progress?.bytesReceived == 8192)
+        #expect(progress?.fileIndex == 1)
+        #expect(progress?.fraction == nil)
+    }
+
+    @Test func knownContentLengthReportsPercentage() {
+        let updates = ProgressUpdates()
+        let delegate = DownloadDelegate(fileIndex: 2, fileCount: 2) { updates.append($0) }
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let task = session.downloadTask(with: URL(string: "https://example.invalid/model")!)
+        delegate.urlSession(session, downloadTask: task, didWriteData: 25,
+                            totalBytesWritten: 50, totalBytesExpectedToWrite: 100)
+        #expect(updates.values.first?.fraction == 0.5)
+        #expect(updates.values.first?.fileIndex == 2)
+    }
+}
+
+private nonisolated final class ProgressUpdates: @unchecked Sendable {
+    private let lock = NSLock()
+    private var updates: [ModelDownloadProgress] = []
+    func append(_ progress: ModelDownloadProgress) {
+        lock.lock()
+        defer { lock.unlock() }
+        updates.append(progress)
+    }
+    var values: [ModelDownloadProgress] {
+        lock.lock()
+        defer { lock.unlock() }
+        return updates
+    }
+}
+
+// MARK: - Playback seeking
+
+@MainActor
+@Suite("Playback seeking", .serialized)
+struct StemPlayerSeekTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CI"] == nil,
+                   "Realtime playback requires a local audio output device."))
+    func seekingWhilePlayingContinuesFromTheNewPosition() async throws {
+        // Silent fixtures exercise the actual engine without playing test tones.
+        let url = try makeSineWAV(seconds: 12, amplitude: 0)
+        let player = StemPlayer()
+        defer {
+            player.unload()
+            try? FileManager.default.removeItem(at: url)
+        }
+        let stems = StemKind.allCases.map {
+            SeparationResult.Stem(kind: $0, pcmFileURL: url, waveformPeaks: [])
+        }
+        player.load(stems: stems)
+        player.togglePlayPause()
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(player.isPlaying)
+        #expect(player.progress > 0)
+
+        for fraction in [0.5, 0.2, 0.75] {
+            player.seek(fraction: fraction)
+            try await Task.sleep(for: .milliseconds(250))
+            let elapsed = player.progress * player.duration - fraction * player.duration
+            #expect(player.isPlaying)
+            #expect(elapsed > 0.05)
+            #expect(elapsed < 0.6)
+        }
+
+        // A drag sends many seeks, and playback must continue after the last one.
+        for step in 20...40 {
+            player.seek(fraction: Double(step) / 100)
+        }
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(player.isPlaying)
+        #expect(player.progress > 0.4)
+        #expect(player.progress < 0.45)
+
+        player.togglePlayPause()
+        player.seek(fraction: 0.6)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!player.isPlaying)
+        #expect(player.progress == 0.6)
+        player.togglePlayPause()
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(player.isPlaying)
+        #expect(player.progress > 0.6)
+        #expect(player.progress < 0.65)
+    }
+}

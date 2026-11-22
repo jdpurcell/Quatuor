@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 
 /// Synchronized multi-track audio player built on `AVAudioEngine`.
 ///
@@ -10,7 +11,7 @@ import AVFoundation
 final class StemPlayer {
     static let shared = StemPlayer()
 
-    struct TrackState {
+    nonisolated struct TrackState: Sendable {
         var isMuted: Bool = false
         var isSoloed: Bool = false
         var volume: Float = 1.0
@@ -78,23 +79,24 @@ final class StemPlayer {
 
     /// Computes the effective volume for a track considering mute, solo, and volume.
     private func applyTrackVolume(for stemID: UUID) {
-        guard let track = tracks[stemID] else { return }
-        let effectiveVolume: Float
-        if track.isMuted {
-            effectiveVolume = 0
-        } else if hasSolo && !track.isSoloed {
-            effectiveVolume = 0
-        } else {
-            effectiveVolume = track.volume
-        }
-        playerNodes[stemID]?.volume = effectiveVolume
+        playerNodes[stemID]?.volume = effectiveVolume(for: stemID)
+    }
+
+    func effectiveVolume(for stemID: UUID) -> Float {
+        guard let track = tracks[stemID] else { return 0 }
+        return Self.effectiveVolume(track: track, hasSolo: hasSolo)
+    }
+
+    nonisolated static func effectiveVolume(track: TrackState, hasSolo: Bool) -> Float {
+        track.isMuted || (hasSolo && !track.isSoloed) ? 0 : track.volume
     }
 
     func seek(fraction: Double) {
+        guard fraction.isFinite, totalFrames > 0 else { return }
+        let fraction = max(0, min(1, fraction))
         let wasPlaying = isPlaying
-        stopAllNodes()
+        stopPlayerNodes()
         seekFrame = AVAudioFramePosition(fraction * Double(totalFrames))
-        seekFrame = max(0, min(seekFrame, totalFrames))
         progress = fraction
         if wasPlaying {
             scheduleAndPlay()
@@ -103,7 +105,8 @@ final class StemPlayer {
 
     func stop() {
         stopPolling()
-        stopAllNodes()
+        stopPlayerNodes()
+        engine.stop()
         seekFrame = 0
         progress = 0
         isPlaying = false
@@ -128,12 +131,6 @@ final class StemPlayer {
 
     private func play() {
         guard !isPlaying else { return }
-        do {
-            try engine.start()
-        } catch {
-            NSLog("AVAudioEngine start failed: \(error)")
-            return
-        }
         scheduleAndPlay()
     }
 
@@ -153,6 +150,13 @@ final class StemPlayer {
             return
         }
 
+        do {
+            if !engine.isRunning { try engine.start() }
+        } catch {
+            NSLog("AVAudioEngine start failed: \(error)")
+            return
+        }
+
         for (id, node) in playerNodes {
             guard let file = audioFiles[id] else { continue }
             node.stop()
@@ -165,16 +169,10 @@ final class StemPlayer {
             applyTrackVolume(for: id)
         }
 
-        // Start all nodes at the same host time for sample-accurate sync.
-        if let hostTime = playerNodes.values.first?.lastRenderTime?.hostTime {
-            let startTime = AVAudioTime(hostTime: hostTime + UInt64(0.01 * Double(NSEC_PER_SEC)))
-            for node in playerNodes.values {
-                node.play(at: startTime)
-            }
-        } else {
-            for node in playerNodes.values {
-                node.play()
-            }
+        // Use a fresh shared deadline, expressed in host-clock ticks rather than nanoseconds.
+        let startTime = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.02))
+        for node in playerNodes.values {
+            node.play(at: startTime)
         }
 
         isPlaying = true
@@ -189,14 +187,14 @@ final class StemPlayer {
               let playerTime = node.playerTime(forNodeTime: nodeTime) else {
             return seekFrame
         }
-        return min(seekFrame + playerTime.sampleTime, totalFrames)
+        return min(seekFrame + max(0, playerTime.sampleTime), totalFrames)
     }
 
-    private func stopAllNodes() {
+    private func stopPlayerNodes() {
         for node in playerNodes.values {
             node.stop()
         }
-        engine.stop()
+        // Seeking reschedules the players without stopping the render engine.
         isPlaying = false
         stopPolling()
     }

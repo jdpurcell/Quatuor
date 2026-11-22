@@ -587,6 +587,193 @@
           }
         }
       }
+    },
+    "Format d’export": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export format"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Format d’export"
+          }
+        }
+      }
+    },
+    "Exporter le mix": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export mix"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exporter le mix"
+          }
+        }
+      }
+    },
+    "Exporte le morceau entier avec les volumes, sourdines et solos actuels. Réduit le niveau si nécessaire pour éviter la saturation.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exports the entire song using the current volume, mute and solo settings. Reduces the level if needed to prevent clipping."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exporte le morceau entier avec les volumes, sourdines et solos actuels. Réduit le niveau si nécessaire pour éviter la saturation."
+          }
+        }
+      }
+    },
+    "Exporte chaque stem séparément à son volume d’origine.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exports each stem separately at its original volume."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exporte chaque stem séparément à son volume d’origine."
+          }
+        }
+      }
+    },
+    "Les pistes audio ne sont pas compatibles pour le mixage.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The audio tracks are not compatible for mixing."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les pistes audio ne sont pas compatibles pour le mixage."
+          }
+        }
+      }
+    },
+    "Remplacer les fichiers existants ?": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replace existing files?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remplacer les fichiers existants ?"
+          }
+        }
+      }
+    },
+    "Les stems portant le même nom dans ce dossier seront remplacés.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stems with the same names in this folder will be replaced."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les stems portant le même nom dans ce dossier seront remplacés."
+          }
+        }
+      }
+    },
+    "Remplacer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replace"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remplacer"
+          }
+        }
+      }
+    },
+    "Fichier %lld sur %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File %1$lld of %2$lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fichier %1$lld sur %2$lld"
+          }
+        }
+      }
+    },
+    "Exporter": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exporter"
+          }
+        }
+      }
+    },
+    "Mix": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mix"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mix"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

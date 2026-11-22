@@ -6,7 +6,7 @@ struct DropZoneView: View {
     @Environment(AppState.self) private var state
     @State private var isHovering = false
 
-    private static let audioTypes: [UTType] = [.mp3, .wav, .aiff, .mpeg4Audio, .audio]
+    private static let audioTypes: [UTType] = [.audio]
 
     var body: some View {
         VStack(spacing: 24) {
@@ -17,9 +17,6 @@ struct DropZoneView: View {
 
             Text("Glisse un fichier audio ici")
                 .font(.title2.weight(.medium))
-            Text("MP3 · WAV · AIFF · M4A")
-                .font(.callout)
-                .foregroundStyle(.secondary)
 
             Button {
                 Task { await pickFile() }

@@ -1,5 +1,17 @@
 import Foundation
 
+nonisolated struct ModelDownloadProgress: Sendable {
+    let fileIndex: Int
+    let fileCount: Int
+    var bytesReceived: Int64 = 0
+    var totalBytes: Int64? = nil
+
+    var fraction: Double? {
+        guard let totalBytes, totalBytes > 0 else { return nil }
+        return min(1, max(0, Double(bytesReceived) / Double(totalBytes)))
+    }
+}
+
 @MainActor
 final class ModelManager {
     static let shared = ModelManager()
@@ -24,50 +36,71 @@ final class ModelManager {
         return Self.files.allSatisfy { fm.fileExists(atPath: modelDirectory.appendingPathComponent($0).path) }
     }
 
-    func ensureModel(progress: @escaping @Sendable (Double) -> Void) async throws {
+    func ensureModel(progress: @escaping @Sendable (ModelDownloadProgress) -> Void) async throws {
         if isModelDownloaded { return }
         try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
 
         for (index, filename) in Self.files.enumerated() {
-            let baseProgress = Double(index) / Double(Self.files.count)
-            let fileWeight = 1.0 / Double(Self.files.count)
             let url = URL(string: "https://huggingface.co/\(Self.repo)/resolve/main/\(filename)")!
             let destination = modelDirectory.appendingPathComponent(filename)
 
             if FileManager.default.fileExists(atPath: destination.path) {
-                progress(baseProgress + fileWeight)
                 continue
             }
 
-            try await download(from: url, to: destination) { fraction in
-                progress(baseProgress + fraction * fileWeight)
-            }
+            progress(ModelDownloadProgress(fileIndex: index + 1, fileCount: Self.files.count))
+            try await Self.download(from: url, to: destination, fileIndex: index + 1,
+                                    fileCount: Self.files.count, progress: progress)
         }
-        progress(1.0)
     }
 
-    nonisolated private func download(
+    nonisolated static func download(
         from url: URL,
         to destination: URL,
-        progress: @escaping @Sendable (Double) -> Void
+        fileIndex: Int,
+        fileCount: Int,
+        progress: @escaping @Sendable (ModelDownloadProgress) -> Void
     ) async throws {
-        let delegate = DownloadDelegate(progress: progress)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-
-        let (tempURL, response) = try await session.download(from: url)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw URLError(.badServerResponse)
+        try await withCheckedThrowingContinuation { continuation in
+            let delegate = DownloadDelegate(fileIndex: fileIndex, fileCount: fileCount, progress: progress,
+                                            destination: destination) { result in
+                continuation.resume(with: result)
+            }
+            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            // The async download convenience API can suppress download progress callbacks.
+            // Use the delegate-driven task and move its temporary file inside the callback.
+            session.downloadTask(with: url).resume()
         }
-        try FileManager.default.moveItem(at: tempURL, to: destination)
     }
 }
 
-private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, Sendable {
-    let progress: @Sendable (Double) -> Void
+// URLSession serializes its delegate callbacks; the lock additionally guarantees a single completion.
+nonisolated final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    let fileIndex: Int
+    let fileCount: Int
+    let progress: @Sendable (ModelDownloadProgress) -> Void
 
-    init(progress: @escaping @Sendable (Double) -> Void) {
+    private let destination: URL?
+    private let completion: @Sendable (Result<Void, any Swift.Error>) -> Void
+    private let lock = NSLock()
+    private var finished = false
+
+    init(fileIndex: Int, fileCount: Int, progress: @escaping @Sendable (ModelDownloadProgress) -> Void,
+         destination: URL? = nil,
+         completion: @escaping @Sendable (Result<Void, any Swift.Error>) -> Void = { _ in }) {
+        self.fileIndex = fileIndex
+        self.fileCount = fileCount
         self.progress = progress
+        self.destination = destination
+        self.completion = completion
+    }
+
+    private func finish(_ result: Result<Void, any Swift.Error>) {
+        lock.lock()
+        let shouldComplete = !finished
+        finished = true
+        lock.unlock()
+        if shouldComplete { completion(result) }
     }
 
     func urlSession(
@@ -77,11 +110,27 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, Send
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        progress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        progress(ModelDownloadProgress(fileIndex: fileIndex, fileCount: fileCount,
+                                       bytesReceived: totalBytesWritten,
+                                       totalBytes: totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil))
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        // Handled in the async download call
+        do {
+            guard let http = downloadTask.response as? HTTPURLResponse, http.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+            guard let destination else { throw URLError(.cannotCreateFile) }
+            try FileManager.default.moveItem(at: location, to: destination)
+            finish(.success(()))
+        } catch {
+            finish(.failure(error))
+        }
     }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Swift.Error)?) {
+        if let error { finish(.failure(error)) }
+        session.finishTasksAndInvalidate()
+    }
+
 }

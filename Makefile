@@ -33,8 +33,8 @@ else
 DESTINATION := platform=macOS
 TEST_DESTINATION = $(DESTINATION)
 endif
-# CI has neither a provisioning profile nor a signing certificate. Locally we
-# sign normally; under CI we do not, because nothing there gets run or shipped.
+# CI defaults to unsigned builds/tests. The signed DMG workflow imports a
+# certificate, supplies an xcconfig, and overrides this with SIGNING=.
 ifdef CI
 SIGNING := CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" CODE_SIGN_ENTITLEMENTS= DEVELOPMENT_TEAM=
 else

@@ -18,7 +18,7 @@ A native macOS app for audio stem separation — isolate vocals, drums, bass and
 - **htdemucs_ft** — Meta's fine-tuned Hybrid Transformer Demucs.
 - **Synchronised multi-track playback** — all stems in lock-step via `AVAudioEngine`, started on the same host time.
 - **Mute / solo / volume** per stem — instant karaoke: mute the vocals and sing along.
-- **Waveform view** with live progress and click-to-seek, **MP3 export** (single stem or batch, VBR V2 via libmp3lame).
+- **Waveform view** with live progress and click-to-seek, **MP3, WAV and FLAC export** (single stem, batch, or the current mix). The export format is remembered between launches.
 - **Adaptive memory**: the MLX Metal cache is capped at 70 % of available system memory; model and buffers are released after separation.
 - English and French, following the system language.
 
@@ -46,13 +46,13 @@ make package      # build/Quatuor.app
 
 1. Drop a song on the window. Quatuor shows its waveform, duration and sample rate.
 2. Click **Separate stems**. The 4:32 song of these captures took about a minute on an M1 Pro.
-3. Play the result, mute or solo stems, then export one stem with **MP3** or all four with **Export all**.
+3. Play the result, mute or solo stems, then choose **MP3**, **WAV** or **FLAC** and export one stem or all four with **Export all**. Use **Export mix** to save the entire song with the current volume, mute and solo settings. Mixes are attenuated only when needed to prevent clipping; individual and batch stem exports keep their original levels. WAV and FLAC exports use 16-bit PCM precision, matching the generated stems.
 
 **New** goes back to the drop zone; the separated stems are temporary files, deleted when you leave the result or quit.
 
 ## How it works
 
-The song is decoded by AVFoundation and handed to [demucs-mlx-swift](https://github.com/kylehowells/demucs-mlx-swift), a port of Demucs to MLX, which runs `htdemucs_ft` — one fine-tuned model per stem — on the GPU. Each stem is written as a 16-bit WAV in the app's temporary directory; playback schedules the four files on four `AVAudioPlayerNode`s started on the same host time, so mute, solo and volume act on stems that never drift apart. MP3 export encodes those WAVs with LAME.
+The song is decoded by AVFoundation and handed to [demucs-mlx-swift](https://github.com/kylehowells/demucs-mlx-swift), a port of Demucs to MLX, which runs `htdemucs_ft` — one fine-tuned model per stem — on the GPU. Each stem is written as a 16-bit WAV in the app's temporary directory; playback schedules the four files on four `AVAudioPlayerNode`s started on the same host time, so mute, solo and volume act on stems that never drift apart. MP3 export encodes those WAVs with LAME; WAV and FLAC export use Apple’s audio APIs, with no additional dependency.
 
 `Stem`, `StemKind` and `StemPlayer` keep their names throughout the code: *stem* is the audio term for a separated track, and it stays the right word whatever the app is called.
 
@@ -71,6 +71,19 @@ The song is decoded by AVFoundation and handed to [demucs-mlx-swift](https://git
 | `make release-check` | Say whether `build/` is publishable |
 | `make lint` | Check compliance with the project charter |
 | `make help` | List every target |
+
+## GitHub Actions builds
+
+Every push to `main` (or a manual workflow run) tests the app, builds it with Xcode using a Developer ID signature, and uploads a signed, notarized DMG as an Actions artifact. The filename includes the UTC build date and short commit hash. Only the DMG is stapled; the app itself may need internet access on first launch after being copied out of the image.
+
+Configure these repository Actions secrets:
+
+- `APPLE_DEVID_APP_CERT_DATA`: base64-encoded Developer ID Application `.p12`, including its private key.
+- `APPLE_DEVID_APP_CERT_PASS`: password for that `.p12`.
+- `APPLE_ID_USER`: Apple ID for notarization.
+- `APPLE_ID_PASS`: app-specific password for that Apple ID.
+
+The team ID is derived from the certificate; no developer account is hard-coded in the project. This workflow uses `make build`, so it does not need the external Charte distribution scripts or an Xcode archive. Download the DMG from the workflow run’s **Artifacts** section.
 
 ## Dependencies
 

@@ -6,6 +6,56 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-11-22
+
+### Added
+- WAV and FLAC exports for individual stems, all stems, and custom mixes,
+  alongside the existing MP3 export. Lossless exports use 16-bit PCM precision
+  matching the generated stems, with Apple's audio APIs and no new dependency.
+- An export-format picker that remembers the last selection between launches.
+- **Export mix** saves the entire song using the current volume, mute, and solo
+  settings. Mixes are attenuated only when necessary to prevent clipping,
+  preserving the relative stem levels and dynamics.
+- Whole-number volume percentages beside each stem's slider, also exposed to
+  accessibility tools.
+- Confirmation before **Export all** replaces existing files in the chosen folder.
+- Regression tests for lossless encoding, mix levels and clipping protection,
+  mute/solo behavior, and download progress with known or unknown content lengths.
+
+### Changed
+- All export filenames use the original filename followed by a title-cased stem
+  name or **Mix**, for example `Song - Vocals.flac` and `Song - Mix.wav`.
+- Individual stem export buttons are labeled **Export**; the shared format picker
+  determines the output format. Individual and batch exports retain the stems'
+  original levels; **Export mix** applies the mixer settings.
+- Export encoding and mixing run off the main actor, streaming audio in chunks.
+  Export controls and **New** are disabled while an export is in progress.
+- The file picker uses the general audio category, and the drop zone no longer
+  displays an incomplete list of accepted file extensions.
+- GitHub Actions runs tests and creates a Developer ID-signed, notarized DMG on
+  every push to `main` or manual run. The DMG is uploaded directly as an Actions
+  artifact, with a date and commit hash in its filename; only the DMG is stapled.
+- CI imports its signing certificate into a temporary keychain, derives the team
+  ID from the certificate, and supplies signing settings to Xcode. The original
+  developer's hard-coded team ID has been removed from the project.
+
+### Fixed
+- Seeking during playback could freeze the audio until pause/play was toggled.
+  Seeking now keeps the audio engine running, and synchronized starts use a fresh
+  host-clock deadline with the correct time-unit conversion.
+- The solo button now responds across its entire visible area, including the
+  transparent padding around the letter.
+- Model downloads could remain at 0% because the async download API did not
+  deliver progress callbacks. Downloads now use a delegate-driven task and show
+  the current file, received bytes, and percentage when the total size is known,
+  with an indeterminate indicator otherwise.
+- Queued download progress updates could restore the download screen after the
+  app had moved on to separation.
+- MP3 exports now report file-creation and encoder-flush failures.
+- CI distribution builds disable Xcode's injected debug entitlements so plain
+  Release builds can pass notarization. Packaging checks for `get-task-allow`
+  before submission and reports Apple's diagnostics if notarization is rejected.
+
 ## [1.3.0] — 2026-10-09
 
 First release under the name Quatuor, as a signed and notarized `.dmg`. The
@@ -63,6 +113,7 @@ Stem, with another bundle identifier: Quatuor installs beside Stem, not over it.
 ### Fixed
 - A crash at the end of some MP3 files; temporary WAV files are cleaned up (1.2.0).
 
-[Unreleased]: https://github.com/gwenn-ha-dev/Quatuor/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/gwenn-ha-dev/Quatuor/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/gwenn-ha-dev/Quatuor/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/gwenn-ha-dev/Quatuor/releases/tag/v1.3.0
 [1.2.0]: https://github.com/gwenn-ha-dev/Quatuor/tree/v1.2.0

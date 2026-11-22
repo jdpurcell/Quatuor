@@ -1,5 +1,4 @@
 import Foundation
-import AppKit
 import AVFoundation
 
 /// Encodes PCM audio to MP3 using libmp3lame (VBR V2, ~190 kbps).
@@ -19,51 +18,6 @@ final class MP3Encoder {
             case .writeFailed(let m): String(localized: "Écriture MP3 échouée : \(m)")
             }
         }
-    }
-
-    /// Presents a save panel and encodes the WAV stem to MP3 at the chosen location.
-    func export(pcmFileURL: URL, suggestedName: String) async throws {
-        let destination = try await pickSaveDestination(suggestedName: suggestedName)
-        try await encode(pcmFileURL: pcmFileURL, to: destination)
-    }
-
-    /// Exports all stems as MP3 into a user-chosen folder.
-    func exportAll(stems: [SeparationResult.Stem], baseName: String) async throws {
-        let folder = try await pickFolder()
-        for stem in stems {
-            let name = "\(baseName) - \(stem.kind.label).mp3"
-            let destination = folder.appendingPathComponent(name)
-            try await encode(pcmFileURL: stem.pcmFileURL, to: destination)
-        }
-    }
-
-    @MainActor
-    private func pickSaveDestination(suggestedName: String) async throws -> URL {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.mp3]
-        panel.nameFieldStringValue = suggestedName
-        panel.canCreateDirectories = true
-
-        let response = await panel.beginAsync()
-        guard response == .OK, let url = panel.url else {
-            throw Error.userCancelled
-        }
-        return url
-    }
-
-    @MainActor
-    private func pickFolder() async throws -> URL {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = String(localized: "Exporter ici")
-
-        let response = await panel.beginAsync()
-        guard response == .OK, let url = panel.url else {
-            throw Error.userCancelled
-        }
-        return url
     }
 
     /// Internal rather than private so the test suite can encode without a save panel.
@@ -87,7 +41,9 @@ final class MP3Encoder {
             throw Error.writeFailed("lame_init_params() a échoué")
         }
 
-        FileManager.default.createFile(atPath: destination.path, contents: nil)
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw Error.writeFailed(destination.lastPathComponent)
+        }
         let handle = try FileHandle(forWritingTo: destination)
         defer { try? handle.close() }
 
@@ -125,18 +81,11 @@ final class MP3Encoder {
         }
 
         let flushed = lame_encode_flush(lame, &mp3Buf, Int32(mp3BufSize))
+        guard flushed >= 0 else {
+            throw Error.writeFailed("lame_encode_flush: \(flushed)")
+        }
         if flushed > 0 {
             handle.write(Data(bytes: mp3Buf, count: Int(flushed)))
-        }
-    }
-}
-
-private extension NSSavePanel {
-    func beginAsync() async -> NSApplication.ModalResponse {
-        await withCheckedContinuation { continuation in
-            self.begin { response in
-                continuation.resume(returning: response)
-            }
         }
     }
 }

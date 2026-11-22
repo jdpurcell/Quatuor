@@ -1,17 +1,19 @@
 import SwiftUI
 
 /// Displays the separated stems with synchronized multi-track playback,
-/// per-stem mute/solo/volume, waveform seek, and MP3 export.
+/// per-stem mute/solo/volume, waveform seek, and audio export.
 struct ResultView: View {
     @Environment(AppState.self) private var state
     let result: SeparationResult
     var player = StemPlayer.shared
     @State private var exportError: String?
-    @State private var isExportingAll = false
+    @State private var isExporting = false
+    @AppStorage("exportFormat") private var exportFormat: ExportFormat = .mp3
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            exportBar
             transportBar
 
             ScrollView {
@@ -19,7 +21,10 @@ struct ResultView: View {
                     ForEach(result.stems) { stem in
                         StemRowView(
                             stem: stem,
+                            baseName: exportBaseName,
                             player: player,
+                            format: exportFormat,
+                            exportInProgress: $isExporting,
                             onExportError: { exportError = $0 }
                         )
                     }
@@ -39,6 +44,10 @@ struct ResultView: View {
         }
     }
 
+    private var exportBaseName: String {
+        result.source.url.deletingPathExtension().lastPathComponent
+    }
+
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
@@ -53,25 +62,52 @@ struct ResultView: View {
             Spacer()
 
             Button {
-                Task { await exportAll() }
-            } label: {
-                if isExportingAll {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Label("Tout exporter", systemImage: "square.and.arrow.up")
-                }
-            }
-            .disabled(isExportingAll)
-
-            Button {
                 player.unload()
                 state.reset()
             } label: {
                 Label("Nouveau", systemImage: "arrow.uturn.backward")
             }
+            .disabled(isExporting)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
+    }
+
+    private var exportBar: some View {
+        HStack(spacing: 12) {
+            Picker("Format d’export", selection: $exportFormat) {
+                ForEach(ExportFormat.allCases, id: \.self) { format in
+                    Text(verbatim: format.label).tag(format)
+                }
+            }
+            .fixedSize()
+            .disabled(isExporting)
+
+            Spacer()
+
+            Button {
+                Task { await exportMix() }
+            } label: {
+                Label("Exporter le mix", systemImage: "slider.horizontal.3")
+            }
+            .help("Exporte le morceau entier avec les volumes, sourdines et solos actuels. Réduit le niveau si nécessaire pour éviter la saturation.")
+            .disabled(isExporting)
+
+            Button {
+                Task { await exportAll() }
+            } label: {
+                Label("Tout exporter", systemImage: "square.and.arrow.up")
+            }
+            .help("Exporte chaque stem séparément à son volume d’origine.")
+            .disabled(isExporting)
+
+            if isExporting {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
         .background(.ultraThinMaterial)
     }
 
@@ -137,27 +173,48 @@ struct ResultView: View {
 
     @MainActor
     private func exportAll() async {
-        isExportingAll = true
-        defer { isExportingAll = false }
+        isExporting = true
+        defer { isExporting = false }
         do {
-            let baseName = result.source.displayName
-                .replacingOccurrences(of: ".\(result.source.url.pathExtension)", with: "")
-            try await MP3Encoder.shared.exportAll(
+            try await AudioExporter.shared.exportAll(
                 stems: result.stems,
-                baseName: baseName
+                baseName: exportBaseName,
+                format: exportFormat
             )
-        } catch MP3Encoder.Error.userCancelled {
+        } catch AudioExporter.Error.userCancelled {
             // User dismissed the folder picker.
+        } catch {
+            exportError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func exportMix() async {
+        // Snapshot settings before the save panel opens; edits during export apply next time.
+        let inputs = result.stems.map {
+            AudioExporter.MixInput(url: $0.pcmFileURL, gain: player.effectiveVolume(for: $0.id))
+        }
+        let format = exportFormat
+        isExporting = true
+        defer { isExporting = false }
+        do {
+            let name = "\(exportBaseName) - \(String(localized: "Mix"))"
+            try await AudioExporter.shared.exportMix(inputs: inputs, suggestedName: name, format: format)
+        } catch AudioExporter.Error.userCancelled {
+            // User dismissed the save panel.
         } catch {
             exportError = error.localizedDescription
         }
     }
 }
 
-/// A single stem row: mute/solo, volume control, waveform with shared progress, and MP3 export.
+/// A single stem row: mute/solo, volume control, waveform with shared progress, and audio export.
 struct StemRowView: View {
     let stem: SeparationResult.Stem
+    let baseName: String
     let player: StemPlayer
+    let format: ExportFormat
+    @Binding var exportInProgress: Bool
     var onExportError: (String) -> Void
     @State private var isExporting = false
 
@@ -197,6 +254,7 @@ struct StemRowView: View {
                             RoundedRectangle(cornerRadius: 4)
                                 .strokeBorder(track.isSoloed ? Color.yellow : .secondary.opacity(0.5), lineWidth: 1)
                         )
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -217,6 +275,12 @@ struct StemRowView: View {
                     )
                     .tint(tint)
                     .frame(maxWidth: 120)
+                    .accessibilityValue(track.volume.formatted(.percent.precision(.fractionLength(0))))
+
+                    Text(track.volume.formatted(.percent.precision(.fractionLength(0))))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
                 }
 
                 GeometryReader { geo in
@@ -241,15 +305,15 @@ struct StemRowView: View {
             Spacer(minLength: 8)
 
             Button {
-                Task { await exportMP3() }
+                Task { await exportStem() }
             } label: {
                 if isExporting {
                     ProgressView().controlSize(.small)
                 } else {
-                    Label("MP3", systemImage: "arrow.down.circle")
+                    Label("Exporter", systemImage: "arrow.down.circle")
                 }
             }
-            .disabled(isExporting)
+            .disabled(exportInProgress)
         }
         .padding(16)
         .background(
@@ -268,15 +332,17 @@ struct StemRowView: View {
     }
 
     @MainActor
-    private func exportMP3() async {
+    private func exportStem() async {
         isExporting = true
-        defer { isExporting = false }
+        exportInProgress = true
+        defer { isExporting = false; exportInProgress = false }
         do {
-            try await MP3Encoder.shared.export(
+            try await AudioExporter.shared.export(
                 pcmFileURL: stem.pcmFileURL,
-                suggestedName: "\(stem.kind.rawValue).mp3"
+                suggestedName: "\(baseName) - \(stem.kind.label)",
+                format: format
             )
-        } catch MP3Encoder.Error.userCancelled {
+        } catch AudioExporter.Error.userCancelled {
             // User dismissed the save panel.
         } catch {
             onExportError(error.localizedDescription)

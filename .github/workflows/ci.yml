@@ -3,23 +3,64 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Prepare Xcode and Metal toolchain
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -downloadComponent MetalToolchain
 
-      - name: Build
-        run: make build
+      - name: Compute build suffix
+        run: |
+          echo "BUILD_SUFFIX=$(date -u '+%Y-%m-%d').${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
-      - name: Test
-        run: make test
+      - name: Test and lint
+        run: make deps test lint
 
-      - name: Charter compliance
-        run: make lint
+      - name: Build signed app and package DMG
+        shell: pwsh
+        env:
+          APPLE_DEVID_APP_CERT_DATA: ${{ secrets.APPLE_DEVID_APP_CERT_DATA }}
+          APPLE_DEVID_APP_CERT_PASS: ${{ secrets.APPLE_DEVID_APP_CERT_PASS }}
+          APPLE_ID_USER: ${{ secrets.APPLE_ID_USER }}
+          APPLE_ID_PASS: ${{ secrets.APPLE_ID_PASS }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          foreach ($name in 'APPLE_DEVID_APP_CERT_DATA', 'APPLE_DEVID_APP_CERT_PASS', 'APPLE_ID_USER', 'APPLE_ID_PASS') {
+            if (-not [Environment]::GetEnvironmentVariable($name)) {
+              throw "Missing required repository secret: $name"
+            }
+          }
+          & .github/scripts/install_cert.ps1
+          if ($env:APPLE_DEVID_APP_CERT_NAME -notmatch '\(([A-Z0-9]{10})\)$') {
+            throw 'Could not determine the team ID from the signing certificate name.'
+          }
+          $env:XCODE_XCCONFIG_FILE = Join-Path $env:RUNNER_TEMP 'quatuor-signing.xcconfig'
+          @"
+          CODE_SIGN_STYLE = Manual
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO
+          CODE_SIGN_IDENTITY = $env:APPLE_DEVID_APP_CERT_NAME
+          DEVELOPMENT_TEAM = $($Matches[1])
+          OTHER_CODE_SIGN_FLAGS = --timestamp
+          "@ | Set-Content -Path $env:XCODE_XCCONFIG_FILE -Encoding utf8NoBOM
+          # Override the Makefile's unsigned CI settings; keep the app's entitlements.
+          & make build icon 'SIGNING='
+          bash .github/scripts/package_dmg.sh "$env:BUILD_SUFFIX"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/*.dmg
+          archive: false
+          if-no-files-found: error
